@@ -108,6 +108,13 @@ def create_argparser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     argparser.add_argument(
+        "--data_format",
+        type=str,
+        default="webdataset",
+        choices=["trajdata", "webdataset"],
+        help="Format of the input data (trajdata or webdataset).",
+    )
+    argparser.add_argument(
         "--dataset_name",
         type=str,
         default="pai",
@@ -117,7 +124,7 @@ def create_argparser() -> argparse.ArgumentParser:
         "--meta_action_names",
         type=str,
         nargs="+",
-        default=["go_straight"],
+        default=["all_ego"],
         help=(
             "Meta-action names to compute. Use 'all_ego' to expand to the default ego-action set."
         ),
@@ -143,7 +150,7 @@ def create_argparser() -> argparse.ArgumentParser:
     argparser.add_argument(
         "--num_workers",
         type=int,
-        default=32,
+        default=8,
         help="Number of worker threads for data loading and clip processing.",
     )
     argparser.add_argument(
@@ -250,17 +257,6 @@ def main() -> None:
         format="%(levelname)s:%(name)s:%(message)s",
     )
 
-    # Load trajdata dataset.
-    dataset = get_trajdata_dataset(
-        dataset_name=args.dataset_name,
-        data_dir=args.data_dir,
-        cache_dir=args.cache_dir,
-        num_workers=args.num_workers,
-        incl_vector_map=bool(args.use_lane),
-    )
-    scene_ts_idx_map = get_scene_ts_idx_map(dataset)
-    all_clip_ids = resolve_clip_ids(scene_ts_idx_map, args.scene_list)
-
     # Select meta actions to label.
     if args.meta_action_names[0] == "all_ego":
         meta_action_names = get_all_ego_meta_action_names(args.use_lane)
@@ -282,37 +278,84 @@ def main() -> None:
         post_save_root = save_root + "_post"
     io_utils.mkdir_if_missing(save_root)
 
-    # Parallel processing.
     cnt = 0
-    num_workers = min(args.num_workers, len(all_clip_ids))
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = [
-            executor.submit(
-                process_clip,
-                clip_id,
-                save_root,
-                dataset,
-                scene_ts_idx_map,
-                meta_action_classes,
-                args.use_lane,
-            )
-            for clip_id in all_clip_ids
-        ]
-        for future in tqdm.tqdm(as_completed(futures), total=len(all_clip_ids)):
-            try:
-                future.result()
-            except Exception as e:
-                logger.exception("[data_labeling] Worker raised an exception: %r", e)
-                continue
+    if args.data_format == "webdataset":
+        import glob
+        from meta_action.utils.webdataset_loader import process_wds_clip
+        tar_files = glob.glob(os.path.join(args.data_dir, "**", "*.tar"), recursive=True)
+        tar_files = [f for f in tar_files if not f.endswith(".gt.tar")]
+        clip_ids = [os.path.basename(f).split(".tar")[0] for f in tar_files]
+        logger.info("Total tar files found: %d", len(tar_files))
+        if args.scene_list is not None:
+            with open(args.scene_list, encoding="utf-8") as f:
+                scene_list = set(f.read().splitlines())
+            tar_files = [f for f, cid in zip(tar_files, clip_ids) if cid in scene_list]
+            clip_ids = [cid for cid in clip_ids if cid in scene_list]
 
-            cnt += 1
+        logger.info("total number of tar files is %d", len(tar_files))
+        num_workers = min(args.num_workers, len(tar_files))
+        if num_workers > 0:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = [
+                    executor.submit(
+                        process_wds_clip,
+                        clip_id,
+                        save_root,
+                        tar_file,
+                        meta_action_classes,
+                    )
+                    for clip_id, tar_file in zip(clip_ids, tar_files)
+                ]
+                for future in tqdm.tqdm(as_completed(futures), total=len(futures)):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.exception("[data_labeling] Worker raised an exception: %r", e)
+                        continue
+                    cnt += 1
+
+    else:
+        # Load trajdata dataset.
+        dataset = get_trajdata_dataset(
+            dataset_name=args.dataset_name,
+            data_dir=args.data_dir,
+            cache_dir=args.cache_dir,
+            num_workers=args.num_workers,
+            incl_vector_map=bool(args.use_lane),
+        )
+        scene_ts_idx_map = get_scene_ts_idx_map(dataset)
+        all_clip_ids = resolve_clip_ids(scene_ts_idx_map, args.scene_list)
+
+        num_workers = min(args.num_workers, len(all_clip_ids))
+        if num_workers > 0:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = [
+                    executor.submit(
+                        process_clip,
+                        clip_id,
+                        save_root,
+                        dataset,
+                        scene_ts_idx_map,
+                        meta_action_classes,
+                        args.use_lane,
+                    )
+                    for clip_id in all_clip_ids
+                ]
+                for future in tqdm.tqdm(as_completed(futures), total=len(all_clip_ids)):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.exception("[data_labeling] Worker raised an exception: %r", e)
+                        continue
+
+                    cnt += 1
 
     # Post-processing the meta actions:
     # smoothing, resolving conflict, flickering, filling, pruning redundant ones, etc.
     post_processing.process_batch(
         meta_action_dir=save_root,
         save_dir=post_save_root,
-        num_workers=num_workers,
+        num_workers=args.num_workers,
     )
 
 

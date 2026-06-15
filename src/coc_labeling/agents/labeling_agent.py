@@ -128,7 +128,11 @@ class LabelingAgent:
 
         # create video data loader
         if self.cfg.data_loader.video is not None:
-            self.video_loader = VideoLoader(self.cfg.data_loader.video, self.cfg.data)
+            if self.cfg.get("data_format", "trajdata") == "webdataset":
+                from coc_labeling.data_loader.wds_video_loader import WdsVideoLoader
+                self.video_loader = WdsVideoLoader(self.cfg.data_loader.video, self.cfg.data)
+            else:
+                self.video_loader = VideoLoader(self.cfg.data_loader.video, self.cfg.data)
         else:
             self.video_loader = None
 
@@ -142,7 +146,11 @@ class LabelingAgent:
 
         # create world model data loader, used by LLM, and sometimes for VLM as well
         if self.cfg.data_loader.vector is not None:
-            self.vector_loader = VectorLoader(self.cfg.data_loader.vector, self.cfg.data)
+            if self.cfg.get("data_format", "trajdata") == "webdataset":
+                from coc_labeling.data_loader.wds_vector_loader import WdsVectorLoader
+                self.vector_loader = WdsVectorLoader(self.cfg.data_loader.vector, self.cfg.data)
+            else:
+                self.vector_loader = VectorLoader(self.cfg.data_loader.vector, self.cfg.data)
         else:
             self.vector_loader = None
 

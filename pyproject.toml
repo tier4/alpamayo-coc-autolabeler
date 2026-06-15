@@ -30,6 +30,8 @@ dependencies = [
   "trajdata @ git+https://github.com/NVlabs/trajdata.git@coc_autolabeling-1.0.0",
   "tqdm",
   "opencv-python",
+  "zstandard",
+  "python-dotenv",
 ]
 
 [project.optional-dependencies]

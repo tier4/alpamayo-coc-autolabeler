@@ -297,8 +297,8 @@ class VideoLoader:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                # since we need to do base64 encoding, we should keep BGR all the time
-                # frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+                # Keep BGR frames (downstream encoding expects BGR).
                 frames_bgr.append(frame)
                 frame_indices.append(frame_index)
                 frame_index += 1

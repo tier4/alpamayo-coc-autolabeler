@@ -122,7 +122,10 @@ class SegmentListGenerator(ABC):
         if vector_loader is None:
             return 0  # Default if no vector loader available
 
-        start_micros, dt_micros = get_clip_timing_info(vector_loader.dataset, clip_id)
+        if self.cfg.get("data_format", "trajdata") == "webdataset":
+            start_micros, dt_micros = 0, int(1e6 / self.cfg.data_loader.vector.fps) if getattr(self.cfg.data_loader, "vector", None) else 100000
+        else:
+            start_micros, dt_micros = get_clip_timing_info(vector_loader.dataset, clip_id)
         if start_micros is None or dt_micros is None:
             return 0  # Default if timing info not available
         if dt_micros <= 0:
@@ -598,7 +601,13 @@ class ParsedSegmentGenerator(SegmentListGenerator):
                     logging.info(f"skip {clip_id_w_ts} as it is already finished")
                 continue
             else:
-                if self.vector_loader is not None:
+                if self.cfg.get("data_format", "trajdata") == "webdataset":
+                    tar_path = os.path.join(self.cfg.data.data_dir, f"{clip_id}.tar")
+                    if not os.path.exists(tar_path):
+                        if self.verbose and self.verbose.verbose_data:
+                            logging.info(f"skip {clip_id_w_ts} as tar file is missing")
+                        continue
+                elif self.vector_loader is not None:
                     dataset = self.vector_loader.dataset
                     scene_ts_idx_map = self.vector_loader.scene_ts_idx_map
                     if dataset is None or scene_ts_idx_map is None:
@@ -682,7 +691,10 @@ class ParsedSegmentGenerator(SegmentListGenerator):
         if self.vector_loader is None:
             return None
 
-        start_micros, dt_micros = get_clip_timing_info(
+        if self.cfg.get("data_format", "trajdata") == "webdataset":
+            start_micros, dt_micros = 0, int(1e6 / self.cfg.data_loader.vector.fps) if getattr(self.cfg.data_loader, "vector", None) else 100000
+        else:
+            start_micros, dt_micros = get_clip_timing_info(
             self.vector_loader.dataset, segment_data["clip_id"]
         )
         if start_micros is None or dt_micros is None:
@@ -973,15 +985,22 @@ class ParquetSegmentGenerator(SegmentListGenerator):
         return self._is_meaningful_output_file(final_save_file)
 
     def check_trajdata_exists(self, clip_id: str, clipgt_index: int) -> bool:
-        """Check if the segment is available in the trajdata cache.
+        """Check if the segment is available in the data source.
+
+        For webdataset format, checks whether the tar file exists.
+        For trajdata format, checks whether the segment is in the trajdata cache.
 
         Args:
             clip_id: Identifier for the clip
             clipgt_index: Index relative to start of clipgt, assuming sampled at 10Hz
 
         Returns:
-            bool: True if the segment exists in trajdata cache, False otherwise
+            bool: True if the segment exists in the data source, False otherwise
         """
+        if self.cfg.get("data_format", "trajdata") == "webdataset":
+            tar_path = os.path.join(self.cfg.data.data_dir, f"{clip_id}.tar")
+            return os.path.exists(tar_path)
+
         if self.vector_loader is None:
             return False
 

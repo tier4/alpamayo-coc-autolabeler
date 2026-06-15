@@ -121,7 +121,7 @@ class VLMCoCAgent:
             "event_start_timestamp": data["event_start_timestamp"],
             "coc_prompt_version": prompt_version or self._get_prompt_version(),
             "final_content": response["content"],
-            "prompt": output_messages,
+            # "prompt": output_messages,
         }
         model_usage = {
             key: response[key]

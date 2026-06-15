@@ -408,6 +408,7 @@ class QwenWrapper(BaseWrapper):
             outputs = self.llm.generate(
                 [llm_inputs], sampling_params=sampling_params, use_tqdm=False
             )
+
             output_text = outputs[0].outputs[0].text
 
         if json_schema is not None:

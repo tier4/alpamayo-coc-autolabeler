@@ -36,7 +36,7 @@ RUN pip install --upgrade pip
 RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cu128 \
     --extra-index-url https://pypi.org/simple \
-    -r /tmp/requirements-lock.txt
+    -r /tmp/requirements-lock.txt zstandard
 RUN pip install --no-cache-dir --no-deps \
     "trajdata @ git+https://github.com/NVlabs/trajdata.git@coc_autolabeling-1.0.0"
 
