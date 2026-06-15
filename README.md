@@ -9,6 +9,8 @@ factors in the scene to the ego vehicle's intended behavior.
 
 - [Workflow Overview](#workflow-overview)
 - [Paper](#paper)
+- [Repository Structure](#repository-structure)
+- [Data Format Support](#data-format-support)
 - [Runtime Requirements](#runtime-requirements)
   - [Validated Configurations](#validated-configurations)
 - [Dependencies (Build Image from Dockerfile)](#dependencies-build-image-from-dockerfile)
@@ -17,7 +19,10 @@ factors in the scene to the ego vehicle's intended behavior.
   - [Step 2: Identify Keyframes](#step-2-identify-keyframes)
 - [Run CoC Autolabeling](#run-coc-autolabeling)
   - [Step 3: Generate CoC Labels](#step-3-generate-coc-labels)
+  - [Batch Processing (Multiple Dates)](#batch-processing-multiple-dates)
   - [Output Structure](#output-structure)
+- [Optional: Navigation Labels](#optional-navigation-labels)
+- [Visualization Tools](#visualization-tools)
 - [Troubleshooting](#troubleshooting)
   - [1. vLLM Import Fails With `libtorch_cuda.so`](#1-vllm-import-fails-with-libtorch_cudaso)
   - [2. Local Qwen Fails With Unsupported CUDA/PTX](#2-local-qwen-fails-with-unsupported-cudaptx)
@@ -40,6 +45,45 @@ factors in the scene to the ego vehicle's intended behavior.
    since these transitions are likely to contain decision-making context.
 3. **Step 3: Generate CoC Labels**: run the VLM pipeline on selected keyframes
    to produce chain-of-causation labels.
+
+## Repository Structure
+
+```text
+alpamayo-coc-autolabeler/
+├── scripts/                          # Runnable pipeline scripts and tools
+│   ├── generate_all_pipeline.sh      # Full pipeline orchestration (Steps 1–3, all dates)
+│   ├── generate_navigation_labels.py # Navigation-intent label generation from lanelet maps
+│   ├── visualize_keyframe_labels.py  # Composite keyframe visualization (camera + BEV + labels)
+│   └── run_visualization.sh          # Batch video generation for multiple dates
+├── src/
+│   ├── coc_labeling/                # CoC VLM labeling package
+│   │   ├── agents/                  # VLM agent implementations
+│   │   ├── config/                  # Hydra config presets
+│   │   ├── data_loader/             # Data loaders (trajdata and WebDataset)
+│   │   ├── model_clients/           # VLM wrapper and runtime utilities
+│   │   ├── batch_data_labeling.py   # Batch entrypoint: load model once, process multiple dates
+│   │   └── data_labeling.py         # Single-date CoC labeling entrypoint
+│   └── meta_action/                 # Meta-action labeling package
+│       ├── utils/
+│       │   └── webdataset_loader.py # WebDataset scenario loader for meta-actions
+│       └── data_labeling.py         # Meta-action labeling entrypoint
+├── Dockerfile
+└── pyproject.toml
+```
+
+## Data Format Support
+
+Two input data formats are supported:
+
+| Format | Description | Key config |
+|--------|-------------|------------|
+| `trajdata` | Default. Reads trajectory data via the trajdata library from parquet clips. | `data_format=trajdata` (default) |
+| `webdataset` | Reads directly from WebDataset `.tar` archives containing per-frame images, trajectory tensors, and velocity tensors compressed with zstandard (`.npy.zst`). | `+data_format=webdataset` |
+
+For the WebDataset format, each `.tar` file corresponds to one clip and is expected to contain:
+- `<clip_id>.trajectory.npy.zst` — ego trajectory `[T, 4]` (x, y, cos_h, sin_h)
+- `<clip_id>.velocity.npy.zst` — ego velocity `[T, 2]` (vx, vy)
+- `<timestamp>_cam_front.jpg` — front camera frames (one per timestep)
 
 ## Paper
 
@@ -121,7 +165,9 @@ video extraction, and CoC labeling.
 
 ### Step 1: Generate Meta-Actions
 
-Run meta-action autolabeling to produce per-clip ego-motion labels:
+Run meta-action autolabeling to produce per-clip ego-motion labels.
+
+**trajdata format:**
 
 ```bash
 meta-action-autolabel \
@@ -133,25 +179,31 @@ meta-action-autolabel \
   --num_workers 8
 ```
 
+**WebDataset format:**
+
+```bash
+python -m meta_action.data_labeling \
+  --data_format webdataset \
+  --data_dir /path/to/webdataset_tars \
+  --save_dir /path/to/meta_action/resultdir \
+  --meta_action_names all_ego \
+  --num_workers 8
+```
+
 Common options:
 
-- `--meta_action_names`: meta-action types to generate. The CLI default is
-  `go_straight`; the example uses `all_ego` to generate the default ego-action
-  set.
-- `--scene_list`: optional path to a text file with one clip ID per line. Use
-  this for small subset or sample-eval runs.
-- `--num_workers`: worker count for data loading and clip processing. The CLI
-  default is `32`; the example uses `8` as a conservative sample-run setting.
+- `--data_format`: `trajdata` (default) or `webdataset`.
+- `--meta_action_names`: meta-action types to generate. Use `all_ego` to
+  generate the full default ego-action set.
+- `--scene_list`: optional path to a text file with one clip ID per line.
+- `--num_workers`: worker count for clip processing.
 
 Key outputs:
 
-- `--cache_dir`: formatted trajectory data cache.
-- `--save_dir`: final per-clip meta-action text outputs. Use
-  this path as `meta_action_dir` in later steps, for example
-  `/path/to/meta_action/resultdir/final_outputs`.
+- `--cache_dir` (trajdata only): formatted trajectory data cache.
+- `--save_dir`: final per-clip meta-action text outputs under `final_outputs/`.
 
-For details on running meta-action autolabeling, including dataset input
-layout, output format, worker guidance, and visualization commands, see
+For details on running meta-action autolabeling, see
 [`docs/meta_action_autolabel.md`](docs/meta_action_autolabel.md).
 
 ### Step 2: Identify Keyframes
@@ -217,17 +269,32 @@ The structure is:
 
 ### Step 3: Generate CoC Labels
 
-Before running CoC labeling, confirm the following inputs. Configure dataset
-paths in `src/coc_labeling/config/data/base.yaml`.
+Before running CoC labeling, confirm the following inputs.
 
-1. `data_dir`: root folder that contains parquet clip data, for example, `/path/to/physical_ai_data`
+**trajdata format** — configure dataset paths in `src/coc_labeling/config/data/base.yaml`:
+
+1. `data_dir`: root folder that contains parquet clip data, for example `/path/to/physical_ai_data`.
 2. `cache_dir`: formatted trajectory data cache.
-3. `meta_action_dir`: meta-action outputs, for example:
-   `/path/to/meta_action/final_outputs`
-4. Keyframe input: the `segment_config_path` can be set in the config `src/coc_labeling/config/data/keyframe_rel_ts.yaml`,
-   the `segment_generator_type` and `meta_action_filter` can be set in the config `src/coc_labeling/config/base_config_vlm_rel_ts.yaml`.
-5. `video_dir`: root folder that contains a `camera` subfolder for raw AV videos, for example:
-   `/path/to/extracted_pai_videos`
+3. `meta_action_dir`: meta-action outputs, for example `/path/to/meta_action/final_outputs`.
+4. Keyframe input: set `segment_config_path` in `src/coc_labeling/config/data/keyframe_rel_ts.yaml`;
+   set `segment_generator_type` and `meta_action_filter` in `src/coc_labeling/config/base_config_vlm_rel_ts.yaml`.
+5. `video_dir`: root folder containing a `camera` subfolder for raw AV videos.
+
+**WebDataset format** — pass overrides on the command line:
+
+```bash
+python -m coc_labeling.data_labeling \
+  --config-name base_config_vlm_rel_ts \
+  +data_format=webdataset \
+  data.data_dir=/path/to/webdataset_tars \
+  data.cache_dir=/path/to/coc_cache \
+  data.meta_action_dir=/path/to/meta_action/final_outputs \
+  data.segment_config_path=/path/to/keyframes/segments_relative_timestamp_sampled.json \
+  model_name=qwen3.5_397b_fp8 \
+  data_loader.video.save_segment_videos=false
+```
+
+No `video_dir` is needed for the WebDataset format; camera frames are read directly from the `.tar` archives.
 
 If `video_dir` is not already populated, you can extract only the clips
 referenced by your keyframe/index JSON. Set `EXTRACTED_VIDEO_ROOT` to the path
@@ -383,6 +450,43 @@ process all available meta-action types.
 For local model inference, if you run into out-of-memory errors, use a GPU or
 machine with more available GPU memory, or reduce parallelism.
 
+### Batch Processing (Multiple Dates)
+
+When running over many dates, loading the VLM weights once and iterating over
+dates sequentially is more efficient than restarting the process per date.
+`batch_data_labeling.py` does this:
+
+```bash
+python -m coc_labeling.batch_data_labeling \
+  --dates 2025-11-19 2025-12-09 2025-12-10 \
+  --data_dir_root /path/to/webdataset_root \
+  --batch_outputs_root /path/to/batch_outputs \
+  --coc_cache_dir /path/to/coc_cache \
+  --model_name qwen3.5_397b_fp8
+```
+
+Arguments:
+
+- `--dates`: space-separated list of date subdirectories under `data_dir_root`.
+- `--data_dir_root`: root directory containing one subdirectory per date, each
+  holding the WebDataset `.tar` files for that date.
+- `--batch_outputs_root`: root directory where outputs are written under
+  `<batch_outputs_root>/<date>/`. Expects keyframe JSON at
+  `<date>/keyframes/segments_relative_timestamp_sampled.json` and writes CoC
+  labels to `<date>/coc_labels/`.
+- `--coc_cache_dir`: shared trajdata/CoC cache directory across dates.
+- `--model_name`: VLM model backend (same options as Step 3).
+
+For a fully automated end-to-end run across all available dates, use the
+orchestration script:
+
+```bash
+bash scripts/generate_all_pipeline.sh
+```
+
+This script auto-detects dates from the data directory and runs Steps 1–3
+sequentially inside Docker.
+
 ### Output Structure
 
 Experiment outputs are written under:
@@ -425,6 +529,49 @@ Field meanings:
 
 If `data_loader.video.save_segment_videos` is set to true, the segment videos are saved under:
 `experiments/video_segment` folder by default.
+
+## Optional: Navigation Labels
+
+Navigation-intent labels describe upcoming turning behavior (e.g., "Turn left
+in 30m", "Continue straight") derived from the route plan and a lanelet map.
+These can be used alongside CoC labels for downstream tasks.
+
+```bash
+python scripts/generate_navigation_labels.py
+```
+
+Prerequisites:
+
+- Lanelet2 OSM map files available at the path defined by `MAP_BASE` in the
+  script.
+- `batch_outputs/<date>/keyframes/segments_relative_timestamp_sampled.json`
+  from Step 2.
+- WebDataset `.tar` archives containing `.route.npy.zst`, `.trajectory.npy.zst`,
+  `.turn.npy.zst`, and optionally `.valid_mask.npy.zst`.
+
+Output is written to `batch_outputs/<date>/nav_labels/<clip_id>/nav_<timestamp>.yaml`.
+
+Edit `MAP_BASE`, `TAR_BASE`, and `DATE_TO_MAP_VERSION` in the script to match
+your environment before running.
+
+## Visualization Tools
+
+### Keyframe Composite Visualization
+
+Generate composite PNG images showing front camera, BEV trajectory with route
+overlay, navigation text, and CoC label for each keyframe:
+
+```bash
+python scripts/visualize_keyframe_labels.py <DATE>
+# e.g.: python scripts/visualize_keyframe_labels.py 2025-11-19
+```
+
+Output images are written to `batch_outputs/<DATE>/keyframe_viz/`. To batch
+multiple dates and encode the images into an MP4 per date:
+
+```bash
+bash scripts/run_visualization.sh
+```
 
 ## Troubleshooting
 

@@ -20,6 +20,10 @@ defaults:
   - misc/verbose@_global_
   - _self_ # ensures that anything defined in this file overrides values from other config files
 
+hydra:
+  run:
+    dir: ../outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 mode: vlm
 model_name: qwen3.5_35b
 timeout_sec: 600

@@ -4,3 +4,14 @@ __pycache__
 .vscode
 */*.DS_Store
 src/*_egg/
+
+meta_actions/
+.env
+*.egg-info/
+outputs/
+experiments/
+batch_outputs/
+*.txt
+coc_cache/
+hf-cache/
+hf_cache/
