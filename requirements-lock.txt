@@ -176,7 +176,7 @@ pydantic-extra-types==2.10.5
 pydantic-settings==2.13.1
 pydantic_core==2.42.0
 Pygments==2.19.2
-PyJWT==2.12.1
+PyJWT==2.13.0
 pynvml==13.0.1
 pyogrio==0.11.1
 pyparsing==3.2.5
