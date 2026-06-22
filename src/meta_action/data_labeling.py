@@ -159,6 +159,15 @@ def create_argparser() -> argparse.ArgumentParser:
         help="Enable lane-graph-dependent meta-action generation.",
     )
     argparser.add_argument(
+        "--lanelet2_map",
+        type=str,
+        default=None,
+        help=(
+            "Path to lanelet2_map.osm for lane meta-actions with WebDataset format. "
+            "Required when --use_lane is set with --data_format webdataset."
+        ),
+    )
+    argparser.add_argument(
         "--scene_list",
         type=str,
         default=None,
@@ -292,6 +301,13 @@ def main() -> None:
             tar_files = [f for f, cid in zip(tar_files, clip_ids) if cid in scene_list]
             clip_ids = [cid for cid in clip_ids if cid in scene_list]
 
+        vector_map = None
+        if args.use_lane:
+            if not args.lanelet2_map:
+                raise ValueError("--lanelet2_map is required when --use_lane is set with webdataset format.")
+            from meta_action.utils.lanelet2_adapter import load_lanelet2_vector_map
+            vector_map = load_lanelet2_vector_map(args.lanelet2_map)
+
         logger.info("total number of tar files is %d", len(tar_files))
         num_workers = min(args.num_workers, len(tar_files))
         if num_workers > 0:
@@ -303,6 +319,7 @@ def main() -> None:
                         save_root,
                         tar_file,
                         meta_action_classes,
+                        vector_map,
                     )
                     for clip_id, tar_file in zip(clip_ids, tar_files)
                 ]

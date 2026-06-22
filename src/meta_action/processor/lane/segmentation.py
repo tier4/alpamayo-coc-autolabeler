@@ -852,10 +852,12 @@ def prepare_lane_data(scenario: Any, agent_token: str) -> pd.DataFrame:
         lane_confidence_scores=lane_conf_scores,
         lane_confidence_labels=lane_conf_labels,
     )
+    # Coerce None → np.nan so downstream numpy ops receive float64, not object.
+    lane_offsets_f = [v if v is not None else np.nan for v in lane_offsets]
     return pd.DataFrame(
         {
             "lane_centerline_id": lane_center_ids,
-            "lane_lateral_offset_m": lane_offsets,
+            "lane_lateral_offset_m": lane_offsets_f,
             "lane_decision": lane_decisions,
             "heading_change_rad": dh_pad,
             "heading_change_rate_rad_m": rate_pad,

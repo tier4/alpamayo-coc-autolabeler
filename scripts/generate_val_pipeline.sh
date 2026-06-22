@@ -1,21 +1,18 @@
 #!/bin/bash
 
-# Stop immediately on error to prevent cascading failures.
+# Pipeline for VALIDATION data annotation.
+# Same 4-step pipeline as generate_all_pipeline.sh but pointed at the eval dataset.
 set -e
 
 # ==========================================
 # 1. Common settings and path definitions
 # ==========================================
 PROJECT_ROOT="$HOME/alpamayo-coc-autolabeler"
-BASE_DATA_DIR="/mnt/share_drive/workspace-at/data/e2e-scene-shards-jpntaxi"
+BASE_DATA_DIR="/mnt/storage_rdma/datasets/tier4/e2e-val"
 HF_CACHE_DIR="/mnt/nvme/hf_cache"
 COC_CACHE_DIR="$HOME/coc_cache"
 
-# Subdirectory name under HOME for all outputs (change to reprocess into a new dir).
-OUTPUT_SUBDIR="alpamayo_labels"
-
-# Host-side parent directory where all outputs are organized by date.
-# Mounted as /outputs inside every Docker container.
+OUTPUT_SUBDIR="alpamayo_labels_val"
 BASE_OUTPUT_DIR="$HOME/${OUTPUT_SUBDIR}"
 
 DOCKER_IMAGE="coc_autolabeler:latest"
@@ -25,32 +22,34 @@ MAP_BASE="/mnt/storage_rdma/datasets/tier4/maps/1423"
 
 # Date -> map version mapping (from generate_navigation_labels.py)
 declare -A DATE_TO_MAP_VERSION=(
-    ["2025-11-19"]="1423-20250905061011941236"
+    ["2025-06-12"]="1423-20250523084638229189"
+    ["2025-06-16"]="1423-20250613084329651701"
+    ["2025-06-25"]="1423-20250619104812759171"
+    ["2025-07-28"]="1423-20250630062747432546"
+    ["2025-08-08"]="1423-20250630062747432546"
+    ["2025-08-13"]="1423-20250630062747432546"
+    ["2025-09-25"]="1423-20250905061011941236"
+    ["2025-10-08"]="1423-20250905061011941236"
+    ["2025-10-15"]="1423-20250905061011941236"
+    ["2025-10-22"]="1423-20250905061011941236"
+    ["2025-10-29"]="1423-20251024074044664283"
+    ["2025-11-12"]="1423-20250905061011941236"
+    ["2025-11-25"]="1423-20250905061011941236"
     ["2025-12-09"]="1423-20251209045313582007"
-    ["2025-12-10"]="1423-20250905061011941236"
-    ["2025-12-17"]="1423-20251210022250515914"
-    ["2025-12-18"]="1423-20251210022250515914"
-    ["2025-12-23"]="1423-20251210022250515914"
-    ["2025-12-24"]="1423-20251210022250515914"
-    ["2025-12-25"]="1423-20251210022250515914"
-    ["2026-01-06"]="1423-20251210022250515914"
-    ["2026-01-07"]="1423-20251210022250515914"
 )
 
 # ==========================================
 # 2. Enumerate target date directories
 # ==========================================
-# Extract directory names matching "YYYY-MM-DD" format from BASE_DATA_DIR and sort them.
 DATES=$(find "${BASE_DATA_DIR}" -mindepth 1 -maxdepth 1 -type d -name "20*" -printf "%f\n" | sort)
 
 echo "=========================================="
-echo "Target dates for processing:"
+echo "Target dates for processing (validation):"
 echo "$DATES"
 echo "=========================================="
 echo ""
 
-# Pre-create all per-date output directories on the host to guarantee host-user ownership
-# before any Docker container (which may run as root) writes into them.
+# Pre-create all per-date output directories on the host to guarantee host-user ownership.
 for DATE in $DATES; do
     mkdir -p "${BASE_OUTPUT_DIR}/${DATE}/meta_actions"
     mkdir -p "${BASE_OUTPUT_DIR}/${DATE}/keyframes"
@@ -79,7 +78,6 @@ for DATE in $DATES; do
         echo "  [WARN] No map version for $DATE, skipping lane meta-actions"
     fi
 
-    # Note: -it is omitted to support non-interactive batch processing.
     docker run --rm \
         --user $(id -u):$(id -g) \
         -v ${PROJECT_ROOT}:/workspace \
@@ -156,7 +154,6 @@ echo ""
 
 # ==========================================
 # Step 4: Unified label generation (nav text + CoC merge)
-# Runs outside Docker using the project .venv.
 # ==========================================
 echo ">>> Starting Step 4: Unified Label Generation (nav text + CoC merge)"
 
