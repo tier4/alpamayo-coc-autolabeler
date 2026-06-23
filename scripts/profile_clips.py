@@ -15,59 +15,28 @@ Usage:
 import argparse
 import json
 import os
-import re
-from collections import Counter, defaultdict
-from typing import Optional
+from collections import Counter
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
-from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
+from scipy.cluster.hierarchy import dendrogram, linkage
 from scipy.spatial.distance import pdist
 
-ALL_ACTIONS = [
-    # Longitudinal
-    "Stop", "Reverse", "GentleAcceleration", "StrongAcceleration",
-    "GentleDeceleration", "StrongDeceleration", "MaintainSpeed",
-    # Lateral
-    "GoStraight", "SteerLeft", "SteerRight",
-    "SharpSteerLeft", "SharpSteerRight",
-    "ReverseLeft", "ReverseRight",
-    # Lane
-    "LaneKeep", "LeftLaneChange", "RightLaneChange",
-    "SlightlyShiftLeft", "SlightlyShiftRight",
-    "TurnLeft", "TurnRight",
-]
-
-ACTION_TO_IDX = {a: i for i, a in enumerate(ALL_ACTIONS)}
-
-RARE_ACTIONS = {
-    "StrongAcceleration", "StrongDeceleration",
-    "LeftLaneChange", "RightLaneChange",
-    "TurnLeft", "TurnRight",
-    "SharpSteerLeft", "SharpSteerRight",
-}
-
-REDUNDANT_PATTERN_ACTIONS = {"Stop", "LaneKeep", "GoStraight", "MaintainSpeed"}
+from curation_utils import (
+    ALL_ACTIONS,
+    ACTION_TO_IDX,
+    RARE_ACTIONS,
+    REDUNDANT_PATTERN_ACTIONS,
+    parse_metaactions,
+)
 
 
 def parse_clip(filepath: str) -> dict:
-    segments = []
-    max_frame = 0
-    with open(filepath) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            m = re.match(r"(\w+)\s+-\s+Agent:<ego>,\s+Start:(\d+),\s+End:(\d+)", line)
-            if m:
-                action = m.group(1)
-                start = int(m.group(2))
-                end = int(m.group(3))
-                segments.append((action, start, end))
-                max_frame = max(max_frame, end)
+    segments = parse_metaactions(filepath)
+    max_frame = max((s["end"] for s in segments), default=0)
     return {"segments": segments, "max_frame": max_frame}
 
 
@@ -75,7 +44,8 @@ def compute_profile(segments: list, max_frame: int) -> np.ndarray:
     if max_frame <= 0:
         return np.zeros(len(ALL_ACTIONS))
     counts = np.zeros(len(ALL_ACTIONS))
-    for action, start, end in segments:
+    for seg in segments:
+        action, start, end = seg["action"], seg["start"], seg["end"]
         idx = ACTION_TO_IDX.get(action)
         if idx is not None:
             counts[idx] += (end - start)
@@ -106,7 +76,7 @@ def profile_all_clips(labels_root: str) -> list[dict]:
             parsed = parse_clip(fpath)
             profile = compute_profile(parsed["segments"], parsed["max_frame"])
 
-            actions_present = {seg[0] for seg in parsed["segments"]}
+            actions_present = {seg["action"] for seg in parsed["segments"]}
             rare_flags = actions_present & RARE_ACTIONS
             redundant_ratio = sum(
                 profile[ACTION_TO_IDX[a]] for a in REDUNDANT_PATTERN_ACTIONS if a in ACTION_TO_IDX
