@@ -234,7 +234,7 @@ torchaudio==2.10.0+cu128
 torchvision==0.25.0+cu128
 tornado==6.5.2
 tqdm==4.67.3
-transformers==4.57.6
+transformers==5.5.0
 triton==3.6.0
 typer==0.19.2
 typer-slim==0.19.2
