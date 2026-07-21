@@ -157,7 +157,7 @@ outlines_core==0.2.11
 packaging==25.0
 pandas==2.3.3
 partial-json-parser==0.2.1.1.post6
-pillow==11.3.0
+pillow==12.3.0
 pluggy==1.6.0
 ply==3.11
 prometheus-fastapi-instrumentator==7.0.0
