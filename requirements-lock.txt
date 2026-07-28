@@ -191,7 +191,7 @@ PyYAML==6.0.3
 pyzmq==27.1.0
 quack-kernels==0.3.2
 qwen-vl-utils==0.0.14
-ray==2.49.2
+ray==2.56.0
 referencing==0.36.2
 regex==2025.9.18
 requests==2.32.5
