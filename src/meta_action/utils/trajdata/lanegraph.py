@@ -13,11 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, List, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Set
 
 import numpy as np
-from trajdata.data_structures.batch import SceneBatch
-from trajdata.maps.vec_map_elements import MapElementType
+
+if TYPE_CHECKING:  # annotation only; see scenario.py
+    from trajdata.data_structures.batch import SceneBatch
 
 
 # DPS lane relation utils
@@ -43,11 +44,15 @@ def get_next_lanes(cur_lanes: Set[str], all_lanes: Any, depth: int = 5) -> Set[s
 
 
 def update_ego_lane_relation(
-    scene_batch: SceneBatch, world_ego_xyzh: np.ndarray
+    scene_batch: "SceneBatch", world_ego_xyzh: np.ndarray
 ) -> List[Dict[str, Set[str]]]:
     """Build per-timestep lane neighborhoods for the ego trajectory."""
     scene_batch_any: Any = scene_batch
     vector_map = scene_batch_any.vector_maps[0]
+    # Imported here rather than at module scope: this is the only runtime use of
+    # trajdata in the package, and it is reachable only with use_lane=True.
+    from trajdata.maps.vec_map_elements import MapElementType
+
     all_lanes = vector_map.elements[MapElementType.ROAD_LANE]
     ego_lane_relations: List[Dict[str, Set[str]]] = []
     for ts in range(world_ego_xyzh.shape[0]):

@@ -28,11 +28,6 @@ from meta_action import post_processing
 from meta_action.data_structures.ego_meta_action_wrapper import META_ACTION_MAPPING
 from meta_action.data_structures.scenario import TemporalScenario
 from meta_action.utils.constant import DELTA_TIMESTAMP, HISTORY_SEC
-from meta_action.utils.trajdata.dataloader import (
-    get_scene_batch_from_scene_id_ts,
-    get_scene_ts_idx_map,
-    get_trajdata_dataset,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +71,11 @@ def process_clip(
     Returns:
         Processed clip id.
     """
+    # Imported here, not at module scope: trajdata is needed only to read the
+    # Physical-AI AV corpus, and importing it unconditionally made the ego
+    # meta-action classifiers unimportable for datasets that do not use it.
+    from meta_action.utils.trajdata.dataloader import get_scene_batch_from_scene_id_ts
+
     save_file = os.path.join(save_root, f"{clip_id}.json")
 
     # Retrieve the scene batch from trajdata.
@@ -251,6 +251,11 @@ def main() -> None:
     )
 
     # Load trajdata dataset.
+    from meta_action.utils.trajdata.dataloader import (  # see process_clip
+        get_scene_ts_idx_map,
+        get_trajdata_dataset,
+    )
+
     dataset = get_trajdata_dataset(
         dataset_name=args.dataset_name,
         data_dir=args.data_dir,

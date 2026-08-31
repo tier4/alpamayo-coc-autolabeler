@@ -14,16 +14,18 @@
 # limitations under the License.
 
 import logging
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import torch
-from trajdata.data_structures.batch import SceneBatch
+
+if TYPE_CHECKING:  # annotation only; see scenario.py
+    from trajdata.data_structures.batch import SceneBatch
 
 logger = logging.getLogger(__name__)
 
 
 def get_agent_data(
-    scene_batch: Optional[SceneBatch], debug: bool = False
+    scene_batch: Optional["SceneBatch"], debug: bool = False
 ) -> Optional[Dict[str, Any]]:
     """Build agent kinematic tensors from a trajdata scene batch."""
     agent_data: Dict[str, Any] = {}

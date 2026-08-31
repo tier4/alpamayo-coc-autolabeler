@@ -13,10 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, List, Optional, Type
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
 
 import numpy as np
-from trajdata.data_structures.batch import SceneBatch
+
+if TYPE_CHECKING:  # trajdata is only needed for these annotations, and only the
+    # lane-enabled path uses trajdata at runtime. Importing it unconditionally
+    # made the whole ego meta-action package unimportable without a pinned
+    # NVlabs fork that declares protobuf==3.19.4.
+    from trajdata.data_structures.batch import SceneBatch
 
 from meta_action.data_structures.motion import TemporalMotionChunk
 from meta_action.utils.constant import START_TS, STEP
@@ -30,7 +35,7 @@ class TemporalScenario:
     def __init__(
         self,
         clip_id: str,
-        scene_batch_data: SceneBatch,
+        scene_batch_data: "SceneBatch",
         cfg: Optional[dict] = None,
         use_lane: bool = True,
     ) -> None:
@@ -54,7 +59,7 @@ class TemporalScenario:
             world_ego_xyzh = self.get_world_states(ego_xyzh, scene_batch_data)
             self.ego_lr = update_ego_lane_relation(scene_batch_data, world_ego_xyzh)
 
-    def get_world_states(self, states: np.ndarray, scene_batch: SceneBatch) -> np.ndarray:
+    def get_world_states(self, states: np.ndarray, scene_batch: "SceneBatch") -> np.ndarray:
         """Map agent-frame states to world-frame `[x, y, z, heading]` states."""
         ego_xyzh = states
         tf = scene_batch.centered_world_from_agent_tf[0]
