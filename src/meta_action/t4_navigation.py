@@ -32,6 +32,14 @@ It also only computes the frames it is asked for. The original derived a label f
 every frame of a clip and then indexed the keyframes out of it; over a whole
 subtree that is millions of frame reads to keep a small fraction of them, and `frames.pack` charges a
 pread for each.
+
+One label file covers one frame, and a frame carries a meta-action from each
+independent taxonomy -- longitudinal, lateral and, with a map, lane. Some
+frames hold two or three keyframe records. The original
+wrote one file per record and so let them overwrite each other, losing records;
+the navigation text was unaffected, being a property of the frame, but the
+meta-action kept was whichever happened to be written last. Here every record for
+a frame is merged into one file and `meta_actions` holds them all.
 """
 
 from __future__ import annotations
@@ -246,11 +254,21 @@ def label_scene(job: Tuple[str, str, str, List[dict], str]) -> Tuple[str, int, O
         out_dir = Path(out_root) / clip_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # A frame appears once per taxonomy it was tagged under, and they all
+        # describe the same instant, so they belong in one file rather than
+        # three that overwrite each other.
+        by_frame: Dict[int, List[str]] = defaultdict(list)
+        for record in keyframes:
+            action = record.get("meta_action", "")
+            frame = int(record["event_start_frame"])
+            if action and action not in by_frame[frame]:
+                by_frame[frame].append(action)
+            by_frame.setdefault(frame, [])
+
         bundle = None
         written = 0
         try:
-            for keyframe in keyframes:
-                frame = int(keyframe["event_start_frame"])
+            for frame in sorted(by_frame):
                 if frame >= len(trajectory):
                     continue
                 if lanelet_map is None or (valid_mask is not None and not bool(valid_mask[frame])):
@@ -262,12 +280,16 @@ def label_scene(job: Tuple[str, str, str, List[dict], str]) -> Tuple[str, int, O
                     route = np.asarray(bundle.frame(frame)["route"])[..., :2]
                     text = nav_text_for_frame(route, trajectory[frame], lanelet_map)
 
+                actions = sorted(by_frame[frame])
                 (out_dir / f"nav_{frame * US_PER_FRAME}.yaml").write_text(
                     yaml.dump(
                         {
                             "event_start_frame": frame,
                             "event_start_timestamp": frame * US_PER_FRAME,
-                            "meta_action": keyframe.get("meta_action", ""),
+                            # Singular kept for readers that expect the original
+                            # field; plural is the complete answer.
+                            "meta_action": actions[0] if actions else "",
+                            "meta_actions": actions,
                             "navigation_text": text,
                         },
                         allow_unicode=True,
