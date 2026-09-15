@@ -189,7 +189,10 @@ class QwenWrapper(BaseWrapper):
         if model_name not in QWEN_MODEL_SPECS:
             raise ValueError(f"Invalid model: {model_name}")
 
-        max_model_len = 128000
+        # Both are tunable because the best split between model parallelism and
+        # replica count depends on the workload. CoC labelling is prefill-bound
+        # with a tiny completion, so more replicas beat a wider tensor split.
+        max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "128000"))
         cache_folder, hf_model_id, quantization = QWEN_MODEL_SPECS[model_name]
         cache_dir_env = os.environ.get("MODEL_CACHE_DIR") or os.environ.get("HF_HOME") or "./models"
         model_cache_dir = Path(cache_dir_env).expanduser().resolve()
@@ -259,10 +262,13 @@ class QwenWrapper(BaseWrapper):
         self.fps = 2
         init_kwargs = {
             "model": model_name,
-            "tensor_parallel_size": torch.cuda.device_count(),
+            "tensor_parallel_size": int(
+                os.environ.get("VLLM_TENSOR_PARALLEL_SIZE", "0")
+            )
+            or torch.cuda.device_count(),
             "gpu_memory_utilization": float(os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.95")),
             "max_model_len": max_model_len,
-            "max_num_seqs": 1,
+            "max_num_seqs": int(os.environ.get("VLLM_MAX_NUM_SEQS", "1")),
             "limit_mm_per_prompt": {"image": 0, "video": 16},
             "download_dir": str(model_cache_dir),
             "seed": 42,
