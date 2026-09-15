@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+defaults:
+  - data: t4
+  - data_loader: default
+  - misc/job_split@_global_
+  - misc/verbose@_global_
+  - _self_ # ensures that anything defined in this file overrides values from other config files
+
+mode: vlm
+model_name: qwen3.8_27b
+timeout_sec: 600
+vlm_agent:
+  agent_name: VLMCoCAgent
+  temperature: 0.0
+  top_p: 1.0
+  repetition_penalty: 1.0
+
+# per experiment
+exp_name: coc_labeling_t4
+resume_exp_dir: null
+verbose:
+  verbose_data: true
+
+data_loader:
+  meta_action:
+    # T4 scenes run to several hundred LiDAR frames, well past the 200-frame Physical-AI
+    # clip length the default assumes; a short timeline silently drops every
+    # meta-action span beyond it.
+    num_total_frames: 600
+
+  video:
+    # A T4 scene's CAM_FRONT.mp4 carries one frame per LiDAR frame, so
+    # keyframe indices already are video frame indices and no timestamp sidecar
+    # is needed. (The Physical-AI export needs true here, being 30 fps.)
+    event_start_from_source_fps: false
+    save_segment_videos: false
+
+  vector:
+    # T4 has no trajdata cache, so ego speed comes from each scene's
+    # derived/scalars.npz instead. The segment generators then have no trajdata
+    # handles to consult, and fall back to clip-relative segment timestamps.
+    source: t4
+    trajdata: null
+
+  keyframe:
+    segment_generator_type: "json"
+    meta_action_filter: null

@@ -29,6 +29,7 @@ MODEL_WRAPPER_REGISTRY: dict[str, Type] = {
     "qwen3_vl_235b_awq": QwenWrapper,
     "qwen3.5_35b": QwenWrapper,
     "qwen3.5_397b_fp8": QwenWrapper,
+    "qwen3.8_27b": QwenWrapper,
 }
 
 

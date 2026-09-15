@@ -15,10 +15,12 @@
 
 """Trajdata dataset helpers used by coc_labeling data loaders."""
 
+from __future__ import annotations
+
 import logging
 from collections import defaultdict
 from types import SimpleNamespace
-from typing import Any, Dict, Iterable, Mapping, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Mapping, Optional, Tuple, Union, cast
 
 import numpy as np
 
@@ -26,7 +28,8 @@ import numpy as np
 if not hasattr(np, "string_"):
     np.string_ = np.bytes_
 
-from trajdata import UnifiedDataset
+if TYPE_CHECKING:
+    from trajdata import UnifiedDataset
 
 DataIndexEntry = Tuple[str, int]
 
@@ -136,6 +139,11 @@ def get_trajdata_dataset(
         "require_map_cache": require_map_cache,
         "data_dirs": data_dirs,
     }
+    # Imported here rather than at module scope: trajdata is an optional
+    # dependency (a pinned NVlabs fork), and runs on datasets without a trajdata
+    # cache -- T4, for one -- switch the vector loader off and never reach here.
+    from trajdata import UnifiedDataset  # noqa: PLC0415
+
     dataset = UnifiedDataset(**dataset_kwargs)
 
     logging.info("# Data Samples: %d", len(dataset))

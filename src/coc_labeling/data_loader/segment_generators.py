@@ -119,8 +119,8 @@ class SegmentListGenerator(ABC):
         Returns:
             int: Frame index at 10Hz for the event start, or 0 if timing info unavailable
         """
-        if vector_loader is None:
-            return 0  # Default if no vector loader available
+        if vector_loader is None or getattr(vector_loader, "dataset", None) is None:
+            return 0  # Default if no trajdata-backed vector loader available
 
         start_micros, dt_micros = get_clip_timing_info(vector_loader.dataset, clip_id)
         if start_micros is None or dt_micros is None:
@@ -402,12 +402,20 @@ class ParsedSegmentGenerator(SegmentListGenerator):
         # Convert dict segments to SegmentInfo dataclass
         segment_info_list = []
         for segment in segment_list:
-            # Compute event_start_clipgt_index (10hz) from event_start_timestamp
-            event_start_clipgt_index = self._compute_event_start_clipgt_index(
-                segment["clip_id"],
-                segment["event_start_timestamp"],
-                self.vector_loader,
-            )
+            if getattr(self.vector_loader, "dataset", None) is None:
+                # No trajdata cache to map a timestamp back onto a clip timeline.
+                # For these datasets the keyframe index already is that timeline
+                # -- on T4 it indexes the LiDAR frames and the video alike
+                # -- so it is used directly rather than round-tripped through the
+                # clip-relative timestamp derived from it.
+                event_start_clipgt_index = int(segment["event_start_frame"])
+            else:
+                # Compute event_start_clipgt_index (10hz) from event_start_timestamp
+                event_start_clipgt_index = self._compute_event_start_clipgt_index(
+                    segment["clip_id"],
+                    segment["event_start_timestamp"],
+                    self.vector_loader,
+                )
 
             segment_info = SegmentInfo(
                 clip_id=segment["clip_id"],  # clip_id is set in filter_segment_w_list
@@ -598,13 +606,13 @@ class ParsedSegmentGenerator(SegmentListGenerator):
                     logging.info(f"skip {clip_id_w_ts} as it is already finished")
                 continue
             else:
-                if self.vector_loader is not None:
-                    dataset = self.vector_loader.dataset
-                    scene_ts_idx_map = self.vector_loader.scene_ts_idx_map
-                    if dataset is None or scene_ts_idx_map is None:
-                        if self.verbose and self.verbose.verbose_data:
-                            logging.info(f"skip {clip_id_w_ts} due to uninitialized vector loader")
-                        continue
+                dataset = getattr(self.vector_loader, "dataset", None)
+                scene_ts_idx_map = getattr(self.vector_loader, "scene_ts_idx_map", None)
+                # Only a trajdata-backed loader can answer whether a segment is
+                # cached. Loaders without a cache -- T4's, which reads each
+                # scene's derived scalars directly -- have every segment
+                # available, so there is nothing to filter on.
+                if dataset is not None and scene_ts_idx_map is not None:
                     # check if this segment falls into this trajdata cache
                     try:
                         _ = get_scene_batch_from_scene_id_ts(
@@ -664,6 +672,15 @@ class ParsedSegmentGenerator(SegmentListGenerator):
                 unique_segments[comparison_tuple] = item.copy()
         return list(unique_segments.values())
 
+    def _fallback_dt_micros(self) -> int:
+        """Frame interval in microseconds implied by the video loader's fps.
+
+        Used only when there is no trajdata cache to read real clip timing from.
+        """
+        video_config = self.cfg.data_loader.get("video", None)
+        fps = float(video_config.fps) if video_config is not None else 10.0
+        return int(round(1e6 / fps))
+
     def populate_timestamp(
         self, segment_data: Dict[str, Any], episode_timestamps: Optional[List[int]]
     ) -> Optional[Dict[str, Any]]:
@@ -679,8 +696,19 @@ class ParsedSegmentGenerator(SegmentListGenerator):
         # Compute the event_start_timestamp from the clipgt data start and dt values.
         # If a list of episode_timestamps is provided, find the closest episode timestamp to the
         # calculated event_start_timestamp for the current clip_id.
-        if self.vector_loader is None:
-            return None
+        if getattr(self.vector_loader, "dataset", None) is None:
+            # No trajdata cache to read a clip's absolute start from. This is the
+            # T4 path, and any other run with data_loader.vector: null, where the
+            # keyframe index already is the video frame index. A clip-relative
+            # timestamp is enough to identify and order segments there; it is
+            # deliberately not an absolute wall-clock time, and clip_start_micros
+            # is left at 0 to say so.
+            segment_data["event_start_timestamp"] = int(
+                segment_data["event_start_frame"] * self._fallback_dt_micros()
+            )
+            segment_data["clip_start_micros"] = 0
+            segment_data["clip_dt_micros"] = self._fallback_dt_micros()
+            return segment_data
 
         start_micros, dt_micros = get_clip_timing_info(
             self.vector_loader.dataset, segment_data["clip_id"]

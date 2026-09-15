@@ -20,7 +20,6 @@ from typing import Any, Dict, List
 import numpy as np
 import torch
 from omegaconf import DictConfig
-from trajdata.data_structures.agent import AgentType
 
 np.set_printoptions(suppress=True, precision=10, threshold=np.inf)
 torch.set_printoptions(sci_mode=False, precision=10, threshold=float("inf"))
@@ -212,6 +211,10 @@ def convert_trajdata2data_dict(scene_batch: Any, vector_config: DictConfig) -> D
 
         # meta data
         agent_type_int: int = int(agent_type[index])
+        # Imported here rather than at module scope: see utils.data for why
+        # trajdata must stay optional.
+        from trajdata.data_structures.agent import AgentType  # noqa: PLC0415
+
         agent_type_str: str = str(AgentType(agent_type_int).name)
         agent_id_global: int = int(agent_name.split("_")[-1])
 

@@ -98,6 +98,13 @@ class VideoConstants:
     # BEV video file pattern
     BEV_VIDEO_PATTERN = "{clip_id}_bev.mp4"
 
+    # TIER IV T4 export: clip ids are scene dirs flattened by
+    # meta_action.t4_labeling.clip_id_for, and the front camera is one mp4 per
+    # scene under data/. T4 scene path components carry no dots, so the
+    # flattening is reversible.
+    T4_CLIP_ID_SEPARATOR = "__"
+    T4_FPV_CHANNEL = "CAM_FRONT"
+
     # Timestamp file parsing
     TIMESTAMP_LINE_PARTS = 2
 
@@ -477,6 +484,36 @@ class VideoLoader:
             fut_frame_indices=fut_frame_indices,
         )
 
+    def _t4_scene_video_path(self, clip_id: str) -> Path | None:
+        """Resolve a TIER IV T4 clip id to its front-camera mp4, if present.
+
+        ``meta_action.t4_labeling.clip_id_for`` builds a clip id by joining the
+        last four components of a scene directory with ``__``, so the scene
+        directory is recovered by undoing that join. The front camera is a
+        single mp4 per scene under ``data/``, at the same rate as the LiDAR
+        frames the meta-action indices count, so no timestamp mapping is needed.
+
+        Args:
+            clip_id: Flattened T4 scene directory, e.g.
+                ``prd_jt__<uuid>__<date>__<scene>``.
+
+        Returns:
+            Path to the channel's mp4, or None when this is not a T4 clip id or
+            the scene does not export that channel as video.
+        """
+        parts = clip_id.split(VideoConstants.T4_CLIP_ID_SEPARATOR)
+        if len(parts) < 2:
+            return None
+        channel = getattr(
+            self.video_config, "t4_fpv_channel", VideoConstants.T4_FPV_CHANNEL
+        )
+        candidate = (
+            Path(self.data_config.video_dir)
+            .joinpath(*parts)
+            .joinpath("data", f"{channel}{VideoConstants.VIDEO_EXTENSION}")
+        )
+        return candidate if candidate.is_file() else None
+
     def _get_video_filepath(self, clip_id: str) -> str | None:
         """Get the file path for an FPV video file.
 
@@ -523,11 +560,16 @@ class VideoLoader:
                     .glob(f"**/{VideoConstants.FPV_FALLBACK_PATTERN}"),
                     None,
                 )
+            # Fallback 3: T4 export: <video_dir>/<scene dir>/data/CAM_FRONT.mp4
+            if fpv_name is None:
+                fpv_name = self._t4_scene_video_path(clip_id)
             if fpv_name is None:
                 raise FileNotFoundError(
                     f"FPV video file not found under: {self.data_config.video_dir} "
-                    f"as {VideoConstants.FPV_VIDEO_PATTERN.format(clip_id=clip_id)} "
-                    f"or {VideoConstants.FPV_FALLBACK_PATTERN}"
+                    f"as {VideoConstants.FPV_VIDEO_PATTERN.format(clip_id=clip_id)}, "
+                    f"{VideoConstants.FPV_FALLBACK_PATTERN} "
+                    f"or a T4 scene dir with data/{VideoConstants.T4_FPV_CHANNEL}"
+                    f"{VideoConstants.VIDEO_EXTENSION}"
                 )
         return str(fpv_name)
 

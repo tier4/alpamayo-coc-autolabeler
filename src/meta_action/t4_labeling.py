@@ -33,8 +33,11 @@ the flat list of ``"<Name>Temporal(ego at <start>-<end>)"`` strings that
 ``meta_action.post_processing`` turns into ``.txt``, which
 ``coc_labeling.keyframe_auto_select`` turns into keyframes.
 
-Lane meta-actions are out of scope here: they need a lane graph, which for T4
-lives in a lanelet2 map keyed by ``area_map_id``, not in the scene.
+Lane meta-actions need a lane graph, which for T4 lives in a lanelet2 map keyed
+by ``area_map_id``/``area_map_version_id`` rather than in the scene. Pass
+``--maps-root`` to enable them: ``meta_action.t4_lane`` then supplies the small
+part of the trajdata map API the lane processor uses. Without it the run stays
+lane-free, exactly as before.
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
@@ -61,18 +64,29 @@ class T4Scenario:
 
     Deliberately not a subclass: ``TemporalScenario.__init__`` takes a
     ``SceneBatch`` and imports trajdata at module scope, which is the whole thing
-    being avoided. The attribute surface below is the complete one -- established
-    by reading every ``scenario.`` access on the ``use_lane=False`` paths -- and
-    ``ego_lr`` is absent on purpose, since the lane code is guarded by
-    ``hasattr(scenario, "ego_lr")`` and must stay switched off.
+    being avoided. The attribute surface below is the complete one, established
+    by reading every ``scenario.`` access the classifiers make.
+
+    ``ego_lr``, ``scene_batch`` and ``get_world_states`` appear only when a
+    ``vector_map`` is given, because the lane code is guarded by
+    ``hasattr(scenario, "ego_lr")``: no map means the lane paths stay switched
+    off rather than failing.
     """
 
-    def __init__(self, clip_id: str, xy: np.ndarray, heading: np.ndarray, dt: float) -> None:
+    def __init__(
+        self,
+        clip_id: str,
+        xy: np.ndarray,
+        heading: np.ndarray,
+        dt: float,
+        vector_map: Optional[Any] = None,
+    ) -> None:
         """
         :param clip_id: scene identifier, used in the output filename.
         :param xy: ``[T, 2]`` ego positions in the map frame, metres.
         :param heading: ``[T]`` ego yaw in the map frame, radians.
         :param dt: sample interval in seconds.
+        :param vector_map: optional ``T4VectorMap`` enabling lane meta-actions.
         """
         if xy.ndim != 2 or xy.shape[1] != 2:
             raise ValueError(f"xy must be [T, 2], got {xy.shape}")
@@ -105,6 +119,18 @@ class T4Scenario:
             "agent_names": ["ego"],
         }
 
+        if vector_map is not None:
+            from meta_action.t4_lane import T4SceneBatch  # noqa: PLC0415
+
+            # T4 poses are already in the map frame, so the trajdata transform
+            # from agent-local to world coordinates is the identity here.
+            self.scene_batch = T4SceneBatch(vector_map)
+            self.get_world_states = lambda agent_xyzh, scene_batch: agent_xyzh
+            world_xyzh = np.concatenate(
+                [xy, np.zeros((len(xy), 1)), heading[:, None]], axis=1
+            )
+            self.ego_lr = vector_map.ego_lane_relations(world_xyzh)
+
 
 def ego_track_arrays(scene_dir: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """Read one T4 scene's ego path as ``(xy [T, 2], heading [T])`` in the map frame.
@@ -125,12 +151,41 @@ def ego_track_arrays(scene_dir: str | Path) -> tuple[np.ndarray, np.ndarray]:
     return xy, heading
 
 
+def lane_free_names(action_names: Sequence[str]) -> List[str]:
+    """``action_names`` minus the lane-level ones, keeping the caller's order.
+
+    The lane-free taxonomy is the source of truth rather than a literal list
+    here, so adding a meta-action upstream cannot silently misclassify it.
+    """
+    lane_free = set(get_all_ego_meta_action_names(use_lane=False))
+    return [name for name in action_names if name in lane_free]
+
+
+def scene_vector_map(scene_dir: str, maps_root: str | None) -> Any:
+    """The lanelet2 map this scene was recorded against, or None.
+
+    The scene names its area map in ``derived/meta.json``; a scene whose map is
+    absent from ``maps_root`` is labelled without lane actions rather than
+    failing, since the rest of its meta-actions are unaffected.
+    """
+    if not maps_root:
+        return None
+    from meta_action.t4_lane import load_vector_map, resolve_map_path  # noqa: PLC0415
+
+    meta_path = Path(scene_dir) / "derived" / "meta.json"
+    if not meta_path.is_file():
+        return None
+    osm_path = resolve_map_path(json.loads(meta_path.read_text()), maps_root)
+    return load_vector_map(str(osm_path)) if osm_path is not None else None
+
+
 def label_scene(
     clip_id: str,
     scene_dir: str,
     save_root: str,
     action_names: Sequence[str],
     dt: float = DELTA_TIMESTAMP,
+    maps_root: str | None = None,
 ) -> tuple[str, str | None]:
     """Label one scene and write ``<save_root>/<clip_id>.json``.
 
@@ -139,9 +194,16 @@ def label_scene(
     """
     try:
         xy, heading = ego_track_arrays(scene_dir)
-        scenario = T4Scenario(clip_id, xy, heading, dt)
+        vector_map = scene_vector_map(scene_dir, maps_root)
+        scenario = T4Scenario(clip_id, xy, heading, dt, vector_map)
+        # Per scene, not per run: with --maps-root the caller asks for lane
+        # actions, but a scene whose map is missing -- some T4 scenes name
+        # no area map at all -- has no lane graph to classify against, and the
+        # lane classifiers reach scenario.get_world_states before the
+        # hasattr(scenario, "ego_lr") guard can turn them off.
+        names = action_names if vector_map is not None else lane_free_names(action_names)
         results: List[Any] = []
-        for name in action_names:
+        for name in names:
             results.extend(META_ACTION_MAPPING[name].get_motion_for_scenario("ego", scenario))
         # save_result_clip writes nothing for an empty result, which is how a
         # scene with no classifiable motion drops out of Step 2 by itself.
@@ -168,6 +230,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--save-dir", required=True, help="output dir for raw <clip_id>.json")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument(
+        "--maps-root",
+        default=None,
+        help=(
+            "Directory of lanelet2 maps laid out as "
+            "<area_map_id>/<area_map_version_id>/lanelet2_map.osm. Given, lane "
+            "meta-actions are emitted as well; omitted, the run is lane-free."
+        ),
+    )
+    parser.add_argument(
         "--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 8))
     )
     parser.add_argument("--task-id", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", 0)))
@@ -189,7 +260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     save_root = Path(args.save_dir)
     save_root.mkdir(parents=True, exist_ok=True)
 
-    action_names = get_all_ego_meta_action_names(use_lane=False)
+    action_names = get_all_ego_meta_action_names(use_lane=bool(args.maps_root))
     print(
         f"task {args.task_id}/{args.n_tasks}: {len(mine)} scenes, "
         f"{len(action_names)} ego meta-actions, {args.workers} workers",
@@ -197,7 +268,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     jobs = [
-        (clip_id_for(e["scene_dir"]), str(root / e["scene_dir"]), str(save_root), action_names)
+        (
+            clip_id_for(e["scene_dir"]),
+            str(root / e["scene_dir"]),
+            str(save_root),
+            action_names,
+            DELTA_TIMESTAMP,
+            args.maps_root,
+        )
         for e in mine
     ]
     done = failed = 0

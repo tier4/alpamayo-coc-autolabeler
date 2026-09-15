@@ -18,6 +18,7 @@ factors in the scene to the ego vehicle's intended behavior.
 - [Run CoC Autolabeling](#run-coc-autolabeling)
   - [Step 3: Generate CoC Labels](#step-3-generate-coc-labels)
   - [Output Structure](#output-structure)
+- [Run on TIER IV T4 Scenes](#run-on-tier-iv-t4-scenes)
 - [Troubleshooting](#troubleshooting)
   - [1. vLLM Import Fails With `libtorch_cuda.so`](#1-vllm-import-fails-with-libtorch_cudaso)
   - [2. Local Qwen Fails With Unsupported CUDA/PTX](#2-local-qwen-fails-with-unsupported-cudaptx)
@@ -279,14 +280,29 @@ Supported `model_name` values in the current release:
 - `qwen3_vl_235b_awq`
 - `qwen3.5_35b`
 - `qwen3.5_397b_fp8`
+- `qwen3.8_27b`
 - `gpt5`
 - `gpt5.5`
 
 For label quality, the recommended `model_name` values are `gpt5.5` and
 `qwen3.5_397b_fp8`. For local-only runs, start with `qwen3.5_397b_fp8` when
-the machine has enough GPU memory; otherwise use `qwen3.5_35b`. Use
-`qwen3.5_35b` for local smoke tests because it is faster to download and load
-than the larger local Qwen variants.
+the machine has enough GPU memory; otherwise use `qwen3.5_35b` or
+`qwen3.8_27b`. Use `qwen3.5_35b` for local smoke tests because it is faster to
+download and load than the larger local Qwen variants.
+
+`qwen3.8_27b` maps to `Qwen/Qwen3.8-27B`, the dense member of the Qwen3.5
+architecture family: the other Qwen3.5 aliases are MoE checkpoints
+(`model_type: qwen3_5_moe`) while this one is dense (`model_type: qwen3_5`).
+The wrapper therefore reuses the Qwen3.5 code paths -- thinking mode is
+disabled per request, and video metadata is passed through to vLLM.
+
+Unquantized bf16 weights total 55.6 GB, so a single node is enough: measured on
+8x H100 with `tensor_parallel_size=8`, weight loading takes 6.59 GiB per GPU and
+leaves room for a 1,020,800-token KV cache at the wrapper's 128k `max_model_len`.
+The pinned stack in `requirements-lock.txt` already supports this checkpoint:
+Transformers does not register the `qwen3_5` model type, but vLLM supplies its
+own `Qwen3_5Config`, and `AutoProcessor` resolves through the checkpoint's
+`processor_class` (`Qwen3VLProcessor`).
 
 For Qwen models, authenticate with Hugging Face:
 
@@ -425,6 +441,78 @@ Field meanings:
 
 If `data_loader.video.save_segment_videos` is set to true, the segment videos are saved under:
 `experiments/video_segment` folder by default.
+
+## Run on TIER IV T4 Scenes
+
+T4 is not a trajdata dataset, so it takes a different route through the same
+four steps. `trajdata` need not be installed for any of them.
+
+Step 1 runs `meta_action.t4_labeling` instead of `meta_action.data_labeling`,
+reading ego poses straight off each T4 scene. It needs the `alpamayo2_super`
+reader on the path, so run it from an environment that has it:
+
+```bash
+python -m alpamayo2_super.t4.index --subtree prd_jt --out index/prd_jt.json
+python -m meta_action.t4_labeling \
+  --index index/prd_jt.json --save-dir meta_action_raw \
+  --maps-root /path/to/t4_dataset/maps
+```
+
+`--maps-root` enables the lane meta-actions (`keep_lane`, the lane changes and
+shifts, and `turn_left`/`turn_right`). Each scene names its map in
+`derived/meta.json`, which resolves to
+`<maps-root>/<area_map_id>/<area_map_version_id>/lanelet2_map.osm`;
+`meta_action.t4_lane` reads it with `lanelet2` (`pip install lanelet2` — the
+manylinux wheels need no ROS) and supplies the small part of the trajdata map
+API the lane processor uses. Omit the flag and the run stays lane-free, with the
+14 longitudinal and steering meta-actions only.
+
+A scene whose map is missing, or whose ego never sits on a lane — a parked
+vehicle, which the export contains — is labelled without lane actions rather
+than failing.
+
+Steps 2 and 3 are unchanged, except that keyframe bounds must suit T4's longer
+scenes: they run to several hundred frames, against the roughly 200 the
+Physical-AI defaults assume.
+
+```bash
+python -m meta_action.post_processing \
+  --raw_meta_action_dir meta_action_raw --meta_action_res_dir meta_action_txt
+python -m coc_labeling.keyframe_auto_select \
+  --meta_action_dir meta_action_txt \
+  --min_start_ts 20 --max_start_ts 520 --output_dir keyframes
+```
+
+Step 4 uses the `base_config_vlm_t4` config. `data.video_dir` is the T4 dataset
+root, because a T4 clip id is its scene directory flattened with `__`, which the
+video loader undoes to find `<scene>/data/CAM_FRONT.mp4`:
+
+```bash
+python -m coc_labeling.data_labeling \
+  --config-name=base_config_vlm_t4 \
+  model_name=qwen3.8_27b \
+  resume_exp_dir=null \
+  exp_name=t4_qwen3.8_27b \
+  data.segment_config_path=keyframes/segments_relative_timestamp_sampled.json \
+  data.video_dir=/path/to/t4_dataset \
+  data.meta_action_dir=meta_action_txt
+```
+
+What that config changes, and why:
+
+- `data_loader.vector.source=t4` takes ego speed from each scene's
+  `derived/scalars.npz` rather than a trajdata cache. Segment timestamps then
+  become clip-relative, and `event_start_frame` indexes the LiDAR frames and the
+  video alike.
+- `data_loader.video.event_start_from_source_fps=false`, because a T4
+  `CAM_FRONT.mp4` holds one frame per LiDAR frame. No timestamp sidecar is
+  needed, unlike the 30 fps Physical-AI export.
+- `data_loader.meta_action.num_total_frames=600` covers the full T4 scene; the
+  200-frame default silently drops every meta-action span past it.
+
+Lane meta-actions require `--maps-root` in step 1, as described above. Without
+it the `lane` field of every prompt reads `Not Available`, and the keyframe
+selector finds no `turn_left`/`turn_right` or lane-change segments.
 
 ## Troubleshooting
 

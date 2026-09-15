@@ -26,6 +26,7 @@ from coc_labeling.data_loader.segment_generators import (
     ParquetSegmentGenerator,
     ParsedSegmentGenerator,
 )
+from coc_labeling.data_loader.t4_vector_loader import T4VectorLoader
 from coc_labeling.data_loader.vector_loader import VectorLoader
 from coc_labeling.data_loader.video_loader import VideoLoader
 from coc_labeling.model_clients.runtime_config import ModelRuntimeConfig
@@ -142,7 +143,18 @@ class LabelingAgent:
 
         # create world model data loader, used by LLM, and sometimes for VLM as well
         if self.cfg.data_loader.vector is not None:
-            self.vector_loader = VectorLoader(self.cfg.data_loader.vector, self.cfg.data)
+            # "t4" reads ego speed from each T4 scene's derived scalars; the
+            # default reads it from a trajdata cache, which T4 does not have.
+            vector_source = self.cfg.data_loader.vector.get("source", "trajdata")
+            if vector_source == "t4":
+                self.vector_loader = T4VectorLoader(self.cfg.data_loader.vector, self.cfg.data)
+            elif vector_source == "trajdata":
+                self.vector_loader = VectorLoader(self.cfg.data_loader.vector, self.cfg.data)
+            else:
+                raise ValueError(
+                    f"Unsupported data_loader.vector.source '{vector_source}'. "
+                    "Supported values: 'trajdata', 't4'."
+                )
         else:
             self.vector_loader = None
 

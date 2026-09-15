@@ -53,7 +53,23 @@ QWEN_MODEL_SPECS: Dict[str, tuple[str, str, Optional[str]]] = {
         "Qwen/Qwen3.5-397B-A17B-FP8",
         "fp8",
     ),
+    "qwen3.8_27b": (
+        "models--Qwen--Qwen3.8-27B",
+        "Qwen/Qwen3.8-27B",
+        None,
+    ),
 }
+
+# Qwen3.8 belongs to the Qwen3.5 architecture family: the released Qwen3.5
+# checkpoints are MoE ("model_type": "qwen3_5_moe") while Qwen3.8-27B is the
+# dense variant ("model_type": "qwen3_5"). Both need the same thinking control
+# and video preprocessing paths, so match them together.
+QWEN3_5_FAMILY_MARKERS = ("Qwen3.5", "Qwen3.8")
+
+
+def _is_qwen3_5_family(hf_model_id: str) -> bool:
+    """Return True for models in the Qwen3.5 architecture family."""
+    return any(marker in hf_model_id for marker in QWEN3_5_FAMILY_MARKERS)
 
 
 def _vllm() -> Any:
@@ -293,7 +309,7 @@ class QwenWrapper(BaseWrapper):
         json_schema: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Run Qwen inference and return the normalized wrapper response payload."""
-        disable_thinking = "Qwen3.5" in self.hf_model_id
+        disable_thinking = _is_qwen3_5_family(self.hf_model_id)
         if self.remote_inference:
             if json_schema is not None:
                 _, response_message = run_one_round_conversation(
@@ -345,7 +361,7 @@ class QwenWrapper(BaseWrapper):
                     add_generation_prompt=True,
                 )
             vision_info_kwargs = {"return_video_kwargs": True}
-            is_qwen3_family = "Qwen3-VL" in self.hf_model_id or "Qwen3.5" in self.hf_model_id
+            is_qwen3_family = "Qwen3-VL" in self.hf_model_id or _is_qwen3_5_family(self.hf_model_id)
             if "Qwen3-VL" in self.hf_model_id:
                 vision_info_kwargs["image_patch_size"] = self.processor.video_processor.patch_size
 

@@ -32,6 +32,7 @@ video:
   <<: *temporal_defaults
   event_start_from_source_fps: false # event_start specified in the source fps (e.g. 30) instead of fps above
   use_fpv: true
+  t4_fpv_channel: CAM_FRONT # T4 front-camera channel resolved as <scene>/data/<channel>.mp4
   use_bev: false
   save_segment_videos: false # if true, save extracted FPV segment videos for visualization/debug
   segment_video_output_dir: null # optional output root; defaults to <data.video_dir>/segment_videos when saving enabled
@@ -44,6 +45,7 @@ video:
 # config for vector loader
 vector:
   <<: *temporal_defaults
+  source: trajdata # "trajdata" reads a trajdata cache; "t4" reads T4 derived scalars
   trajdata:
     dataset: clipgt
     split: all

@@ -944,7 +944,11 @@ def segment_lane(
 
     # Metrics
     dt = float(DELTA_TIMESTAMP)
-    off = df_series["lane_lateral_offset_m"].to_numpy()
+    # dtype=float, not the column's own: lane_lateral_offset_m holds None where no
+    # lane was matched, and a scene that matches none of them -- a vehicle parked
+    # off the lane graph, which T4 exports -- leaves the column object-typed, which
+    # np.isfinite in _safe_nanmean cannot take.
+    off = df_series["lane_lateral_offset_m"].to_numpy(dtype=float)
     h_rate = df_series["heading_change_rate_rad_m"].to_numpy()
     dhead = df_series["heading_change_rad"].to_numpy()
     step_dist = df_series["step_distance_m"].to_numpy()
