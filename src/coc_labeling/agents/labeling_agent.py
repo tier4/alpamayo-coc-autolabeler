@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, cast
 
 from omegaconf import DictConfig
@@ -30,6 +31,7 @@ from coc_labeling.data_loader.t4_vector_loader import T4VectorLoader
 from coc_labeling.data_loader.vector_loader import VectorLoader
 from coc_labeling.data_loader.video_loader import VideoLoader
 from coc_labeling.model_clients.runtime_config import ModelRuntimeConfig
+from coc_labeling.utils.general_helpers import get_vlm_yaml_path
 
 
 class LabelingAgent:
@@ -168,6 +170,34 @@ class LabelingAgent:
         """Run labeling over all generated segments and save model outputs."""
         # Generate segment list using the configured segment generator
         segment_info_list = self.segment_generator.generate_segment_list()
+
+        # Drop segments already written. A labelling run over the full T4 corpus
+        # is days of GPU time, so it will be interrupted -- by a time limit, by a
+        # node needed elsewhere, by a crash -- and restarting it must not redo
+        # the finished part. The output file is the record of what is done;
+        # nothing else is, and the alternative is a separate ledger that can
+        # disagree with the directory.
+        if self.save_root:
+            total = len(segment_info_list)
+            segment_info_list = [
+                info
+                for info in segment_info_list
+                if not os.path.exists(
+                    get_vlm_yaml_path(
+                        self.save_root,
+                        {
+                            "clip_id": info.clip_id,
+                            "event_start_timestamp": info.event_start_timestamp,
+                        },
+                    )
+                )
+            ]
+            done = total - len(segment_info_list)
+            if done:
+                logging.info(
+                    "Resuming: %d of %d segments already labelled, %d remaining",
+                    done, total, len(segment_info_list),
+                )
 
         # loop through the remaining segments to be finished
         success_count = 0
