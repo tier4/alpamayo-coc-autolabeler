@@ -23,6 +23,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import torch
 
 from coc_labeling.model_clients.chat import run_one_round_conversation
@@ -65,6 +66,26 @@ QWEN_MODEL_SPECS: Dict[str, tuple[str, str, Optional[str]]] = {
 # dense variant ("model_type": "qwen3_5"). Both need the same thinking control
 # and video preprocessing paths, so match them together.
 QWEN3_5_FAMILY_MARKERS = ("Qwen3.5", "Qwen3.8")
+
+
+def _as_images(frames: List[Any]) -> List[Any]:
+    """Turn decoded frames into PIL images for qwen_vl_utils.
+
+    The loader hands back BGR arrays, OpenCV's convention, which is what the
+    remote path relies on because cv2.imencode expects BGR. PIL does not, so the
+    channel order has to be swapped here rather than in the loader.
+    """
+    from PIL import Image  # noqa: PLC0415 - keep the import off the module path
+
+    images = []
+    for frame in frames:
+        if isinstance(frame, np.ndarray):
+            images.append(Image.fromarray(frame[:, :, ::-1]))
+        elif isinstance(frame, Image.Image):
+            images.append(frame)
+        else:
+            raise TypeError(f"Unsupported video frame type: {type(frame)!r}")
+    return images
 
 
 def _is_qwen3_5_family(hf_model_id: str) -> bool:
@@ -489,13 +510,24 @@ class QwenWrapper(BaseWrapper):
         if m_type == "video":
             if not isinstance(content, list):
                 raise TypeError("Video content must be a list of frames.")
+
+            if not self.remote_inference:
+                # qwen_vl_utils accepts a list of images, so a local engine needs
+                # no data URI at all. Going through one cost 469 ms per segment to
+                # JPEG-encode and base64 the frames and most of the 2029 ms
+                # process_vision_info then spent undoing it -- 25.6 MB of base64
+                # for 16 frames that are already decoded in this process.
+                return {
+                    "role": role,
+                    "content": [
+                        {"type": "video", "video": _as_images(content), "fps": 2}
+                    ],
+                }
+
             video = []
             for f_i in content:
                 base64_str = encode_image(f_i)
-                if self.remote_inference:
-                    video.append(base64_str)
-                else:
-                    video.append(f"data:image/jpeg;base64,{base64_str}")
+                video.append(base64_str)
 
             if self.remote_inference:
                 return {
@@ -507,8 +539,4 @@ class QwenWrapper(BaseWrapper):
                         }
                     ],
                 }
-            return {
-                "role": role,
-                "content": [{"type": "video", "video": video, "fps": 2}],
-            }
         raise ValueError(f"Invalid message type: {m_type}")

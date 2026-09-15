@@ -195,6 +195,24 @@ class VideoLoader:
         """
         self.video_config = video_config
         self.data_config = data_config
+        # Decoding at the full source resolution costs ~4x the time and the model never
+        # sees more than ~0.6 Mpx, so ask the decoder for a smaller frame. Half
+        # resolution stays comfortably above what Qwen's smart_resize picks for
+        # any frame count it may be handed, so the final resize is still a
+        # downscale and nothing is upsampled.
+        self._decode_size: tuple[int, int] = (1440, 930)
+        # One GOP is 30 frames here; seek a little further back so the keyframe
+        # is certainly at or before the window.
+        self._SEEK_MARGIN_FRAMES = 40
+        # A window decodes in ~3 s on the CPU; anything near 20 s is wedged.
+        self._DECODE_TIMEOUT_SEC = 20
+        # NVDEC decodes the same window in 2.5 s against the CPU's 3.2 s, and it
+        # keeps working with 0.95 of the card already held, so memory pressure is
+        # not the problem. Sharing a GPU with a vLLM engine that is mid-inference
+        # is: one segment in six wedged ffmpeg at 100% CPU for a quarter of an
+        # hour. Off by default until that is understood -- 0.7 s a segment is not
+        # worth a stall, and the timeout above only bounds the damage.
+        self._gpu_decode = bool(int(os.environ.get("COC_GPU_VIDEO_DECODE", "0")))
         # Cache for timestamp mappings: {clip_id: [(index, timestamp), ...]}
         self._timestamp_mappings: dict[str, list[tuple[int, int]]] = {}
         if video_config is None:
@@ -227,6 +245,73 @@ class VideoLoader:
             yield cap
         finally:
             cap.release()
+
+    def _decode_window_ffmpeg(
+        self, video_path: str, start: int, count: int, frame_rate: int
+    ) -> list[np.ndarray] | None:
+        """Decode `count` frames from absolute index `start`, downscaled, via ffmpeg.
+
+        Three things this buys over the OpenCV loop below, measured on a T4
+        CAM_FRONT.mp4 for one 80-frame window:
+
+        * NVDEC does the decode, and `-resize` makes the decoder emit the smaller
+          frame, so the full-resolution frame never crosses PCIe. 2188 ms -> ~1480 ms.
+        * The model only ever sees ~0.6 Mpx, so the full-resolution pixels were
+          being decoded and then thrown away. Handing the smaller frame onward
+          also cuts the Qwen video processor from 2029 ms to 382 ms.
+        * ffmpeg runs out of process, which avoids an in-process clash between
+          PyAV and the torchvision.io that qwen_vl_utils imports -- that pairing
+          decodes correctly and then hangs the interpreter.
+
+        `-ss` before `-i` is a keyframe seek, so it lands at or before the frame
+        wanted; `-copyts` keeps the timestamps absolute through it and the select
+        filter picks up exactly at `start`. Without `-copyts` the filter sees a
+        timeline restarting at zero and silently returns the wrong frames.
+
+        Returns None if ffmpeg is unavailable or returns nothing, so the caller
+        falls back to OpenCV rather than failing the segment.
+        """
+        width, height = self._decode_size
+        seek = max(0.0, (start - self._SEEK_MARGIN_FRAMES) / frame_rate)
+        select_from = (start - 0.5) / frame_rate
+        for use_nvdec in (True, False) if self._gpu_decode else (False,):
+            accel = (
+                ["-hwaccel", "cuda", "-c:v", "hevc_cuvid", "-resize", f"{width}x{height}"]
+                if use_nvdec
+                else []
+            )
+            scale = "" if use_nvdec else f",scale={width}:{height}"
+            command = [
+                "ffmpeg", "-v", "error", "-nostdin", "-copyts", *accel,
+                "-ss", f"{seek:.3f}", "-i", video_path, "-an", "-sn",
+                "-vf", f"select='gte(t\\,{select_from:.4f})'{scale}",
+                "-frames:v", str(count), "-vsync", "0",
+                "-f", "rawvideo", "-pix_fmt", "bgr24", "-",
+            ]
+            try:
+                raw = subprocess.run(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=True, timeout=self._DECODE_TIMEOUT_SEC,
+                ).stdout
+            except subprocess.TimeoutExpired:
+                # Never let a wedged decoder stall the run. One did: with NVDEC
+                # asked for a GPU that vLLM already holds, ffmpeg span at 100% CPU
+                # for a quarter of an hour on a single segment and the whole
+                # replica waited on it.
+                logging.warning("ffmpeg decode timed out after %ss (nvdec=%s) for %s",
+                                self._DECODE_TIMEOUT_SEC, use_nvdec, video_path)
+                continue
+            except (OSError, subprocess.CalledProcessError) as error:
+                logging.warning("ffmpeg decode failed (nvdec=%s) for %s: %s",
+                                use_nvdec, video_path, error)
+                continue
+            stride = width * height * 3
+            decoded = len(raw) // stride
+            if decoded == 0:
+                continue
+            flat = np.frombuffer(raw, np.uint8)[: decoded * stride]
+            return list(flat.reshape(decoded, height, width, 3))
+        return None
 
     def _load_video_frames(self, video_path: str, event_start: int | None) -> VideoFrameData:
         """Load video frames from a video file with optional FPS subsampling.
@@ -273,6 +358,22 @@ class VideoLoader:
                 source_start = frame_offset + sampled_start * frame_interval
                 source_end_exclusive = frame_offset + sampled_end * frame_interval
 
+                event_start_local = int(event_start_new) - sampled_start
+                fast = self._decode_window_ffmpeg(
+                    video_path, source_start, source_end_exclusive - source_start, frame_rate
+                )
+                if fast is not None:
+                    kept = [
+                        (source_start + offset, frame)
+                        for offset, frame in enumerate(fast)
+                        if offset % frame_interval == 0
+                    ]
+                    return VideoFrameData(
+                        frames=[frame for _, frame in kept],
+                        event_start=event_start_local,
+                        frame_indices=[index for index, _ in kept],
+                    )
+
                 if source_start > 0:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, source_start)
 
@@ -289,7 +390,6 @@ class VideoLoader:
                         frame_indices.append(source_index)
                     source_index += 1
 
-                event_start_local = int(event_start_new) - sampled_start
                 return VideoFrameData(
                     frames=frames_bgr,
                     event_start=event_start_local,
