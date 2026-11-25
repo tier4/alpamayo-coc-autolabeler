@@ -123,7 +123,9 @@ class ChatClient:
         self,
         registry_dir: str | Path,
         *,
-        timeout_s: float = 300.0,
+        # A local server can need longer than 300 s for a long thinking answer; set
+        # RSG_REQUEST_TIMEOUT_S to raise the limit. Unset keeps 300 s.
+        timeout_s: float = float(os.environ.get("RSG_REQUEST_TIMEOUT_S", "300")),
         max_tokens: int = 8192,
         temperature: float = 0.7,
         on_attempt: Callable[[dict], None] | None = None,
