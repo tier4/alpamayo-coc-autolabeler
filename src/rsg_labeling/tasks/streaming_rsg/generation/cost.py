@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import math
+import os
 import threading
 import uuid
 from collections.abc import Callable
@@ -37,6 +38,11 @@ def attempt_budget_cost(row: dict) -> float | None:
         return value if math.isfinite(value) and value >= 0 else None
     if row.get("status_code") in {429, 500, 502, 503, 504} and not row.get("usage"):
         return 1.0
+    # Local endpoints (see t4/README.md): a rejected or broken request without usage is not billed,
+    # so price it explicitly instead of leaving an unknown cost that stops the whole campaign.
+    unpriced = os.environ.get("RSG_UNPRICED_ERROR_USD")
+    if unpriced is not None and row.get("status_code") != 200 and not row.get("usage"):
+        return float(unpriced)
     if row.get("cost_estimate_policy") == "configured_token_rates_v1":
         if row.get("service_tier") not in (None, "default"):
             return None
