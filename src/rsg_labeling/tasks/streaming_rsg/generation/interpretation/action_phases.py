@@ -5,6 +5,31 @@ from dataclasses import asdict
 
 from ...schema.contracts import Interval, Timeline
 
+# Local models (Qwen3.8 in our runs) tend to read before_id/after_id as a phase's start and
+# end, and the bare validation error ("first phase starts at physical clip origin") leads them to
+# insert the origin observation instead of null. Spell out the bracket semantics in the prompt,
+# and say how to fix a bracket error in the repair turn.
+BRACKET_SEMANTICS = (
+    "\nBRACKET SEMANTICS (read carefully): before_id/after_id never mark a phase's start and "
+    "end. A phase ends implicitly where the next phase starts. For each phase after the first, "
+    "after_id is the delivered ID of the first observation inside the new phase (the phase "
+    "starts at that timestamp) and before_id is the delivered ID of the immediately preceding "
+    "observation of the same stream, at most 0.6 s earlier, e.g. before_id "
+    "\"env:ego:<t-200000>\", after_id \"env:ego:<t>\". The first phase uses null/null. Copy IDs "
+    "exactly as delivered (env:ego:..., env:frame:...), never bare timestamps.\n"
+)
+BRACKET_REPAIR = (
+    "Repair: phases[0] must have before_id=null AND after_id=null; it starts at the clip "
+    "origin and ends where phases[1] starts. For every later phase, before_id/after_id are NOT "
+    "that phase's start and end. They are two consecutive observations of the SAME sensor "
+    "stream that straddle the instant the new phase begins: after_id is the first observation "
+    "of the new phase (the phase starts at its timestamp) and before_id is the observation of "
+    "that stream immediately before it, at most 0.6 s earlier (e.g. env:ego:T-200000 -> "
+    "env:ego:T). A phase ends where the next phase's after_id is; the last phase ends at the "
+    "clip end. Use full delivered IDs exactly as listed."
+)
+BRACKET_ERROR_MARKERS = ("first phase", "bracket", "before_id", "after_id")
+
 
 def video_only_context(context):
     """Require an explicit camera-only contract before permitting visual longitudinal support."""
@@ -128,6 +153,7 @@ Choose all phase boundaries first, then check every support_id against its own p
 Use confidence uncertain if the provided evidence cannot support the span.
 Use the earliest supported commitment/onset, not a later convenient image mid-maneuver.
 """
+    prompt += BRACKET_SEMANTICS
     if video_only_context(context):
         old = "Longitudinal changes REQUIRE ego_pose brackets."
         assert old in prompt
@@ -183,7 +209,15 @@ Use the earliest supported commitment/onset, not a later convenient image mid-ma
             messages.extend(
                 [
                     {"role": "assistant", "content": response},
-                    {"role": "user", "content": f"Repair the JSON/evidence references: {error}"},
+                    {
+                        "role": "user",
+                        "content": f"Repair the JSON/evidence references: {error}"
+                        + (
+                            f"\n{BRACKET_REPAIR}"
+                            if any(m in str(error) for m in BRACKET_ERROR_MARKERS)
+                            else ""
+                        ),
+                    },
                 ]
             )
     raise AssertionError("action observation returned no outcome")
